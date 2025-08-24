@@ -1,0 +1,37 @@
+name: smart-app
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - streamlit
+    - Pillow
+    - google-generativeai
+    - anthropic
+    - openai
+    - requests
+    - beautifulsoup4
+    - selenium
+    - webdriver-manager
+    - PyPDF2
+    - python-docx
+    - openpyxl
+    - pandas
+    - numpy
+    - matplotlib
+    - seaborn
+    - plotly
+    - scikit-learn
+    - nltk
+    - spacy
+    - transformers
+    - torch
+    - tensorflow
+    - opencv-python-headless
+    - pytesseract
+    - easyocr
+    - datasets
+    - evaluate
+    - ragas
