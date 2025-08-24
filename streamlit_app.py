@@ -35,7 +35,7 @@ model_type = st.sidebar.selectbox(
 
 api_key = st.sidebar.text_input(
     "API Key",
-    value="AIzaSyA03TDmMCySeHgisstcCLeBurY9NnyCytE" if model_type == "gemini" else "",
+    value="GEMINI_KEY" if model_type == "gemini" else "",
     type="password"
 )
 
@@ -65,7 +65,7 @@ if use_separate_verification:
     
     verification_api_key = st.sidebar.text_input(
         "Verification API Key",
-        value="AIzaSyA03TDmMCySeHgisstcCLeBurY9NnyCytE" if verification_model_type == "gemini" else "",
+        value="GEMINI_KEY" if verification_model_type == "gemini" else "",
         type="password",
         key="verification_api_key"
     )
