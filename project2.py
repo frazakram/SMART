@@ -17,10 +17,16 @@ from typing import Dict, List, Optional, Union
 import google.generativeai as genai
 import pandas as pd
 import pymupdf
-import requests
-from PIL import Image
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from PIL import Image
+from docx import Document
+import requests
+
+
 from tqdm import tqdm
+import openpyxl
+
+import csv
 
 # Suppress warnings
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,7 +68,10 @@ class GeminiModel(AIModel):
         """Identify content in an image using Gemini"""
         try:
             parts = [
-                {"text": "Identify what type of content this image contains. Pay special attention to graphs, charts, bar graphs, and histograms. Respond ONLY with relevant tags from this list: image, photo, text, document, handwriting, graph, chart, bar graph, histogram, diagram, table, infographic, map, drawing, screenshot. Multiple tags are allowed."},
+                {"text": """Identify what type of content this image contains. Pay special attention to graphs, charts, bar graphs, and histograms. 
+                 Respond ONLY with relevant tags from this list: image, photo, text, document, handwriting, graph, chart, bar graph, histogram, diagram, 
+                 table, infographic, map, drawing, screenshot.
+                  Multiple tags are allowed."""},
                 {"inline_data": {
                     "mime_type": "image/png",
                     "data": encoded_image
@@ -464,7 +473,8 @@ class AIAgent:
         
         # Get all supported files
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.gif', '*.tiff']
-        document_extensions = ['*.pdf', '*.docx', '*.txt']
+        document_extensions = ['*.pdf', '*.docx', '*.doc', '*.txt', '*.csv', '*.xlsx', '*.xls', '*.xlsm', '*.xlsb']
+
         
         all_files = []
         for ext in image_extensions + document_extensions:
@@ -492,8 +502,16 @@ class AIAgent:
                 items.extend(self.process_pdf_file(file_path))
             elif file_ext in ['.txt', '.csv']:
                 items.extend(self.process_text_file(file_path))
+            elif file_ext in ['.xlsx', '.xls', '.xlsm', '.xlsb']:
+                items.extend(self.process_excel_file(file_path))
+            elif file_ext in ['.docx', '.doc']:
+                # prefer .docx; for .doc try to convert to docx first or warn
+                if file_ext == '.doc':
+                    logger.warning("Legacy .doc found — consider converting to .docx for better processing.")
+                items.extend(self.process_docx_file(file_path))
             else:
                 logger.warning(f"Unsupported file type: {file_ext}")
+
         
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
@@ -548,7 +566,7 @@ class AIAgent:
             full_text_content = ""
             for page_num, page in enumerate(doc):
                 # Save each page as a separate image
-                pix = page.get_pixmap()
+                pix = page.get_pixmap(matrix=pymupdf.Matrix(1.0, 1.0))
                 image_path = os.path.join(self.base_dir, "images", f"{base_name}_page_{page_num + 1}.png")
                 pix.save(image_path)
 
@@ -613,8 +631,116 @@ class AIAgent:
             logger.error(f"Error processing text file {text_path}: {e}")
         
         return items
+    def process_excel_file(self, excel_path: str) -> List[ContentItem]:
+        """Process Excel files (.xlsx, .xls). Creates one ContentItem per sheet + one 'table' item per sheet."""
+        items = []
+        try:
+            # Read all sheets as DataFrames
+            sheets = pd.read_excel(excel_path, sheet_name=None, engine=None)  # pandas chooses engine
+            base_name = os.path.splitext(os.path.basename(excel_path))[0]
+
+            for sheet_name, df in sheets.items():
+                # Save sheet CSV for reference
+                safe_sheet_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in sheet_name)[:120]
+                csv_path = os.path.join(self.base_dir, "tables", f"{base_name}__{safe_sheet_name}.csv")
+                os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                df.to_csv(csv_path, index=False, encoding='utf-8')
+
+                # Create a table content item (include a small preview in content)
+                preview = df.head(50).to_csv(index=False)
+                metadata = {
+                    "file": excel_path,
+                    "sheet": sheet_name,
+                    "rows": int(df.shape[0]),
+                    "columns": int(df.shape[1]),
+                    "csv_path": csv_path
+                }
+
+                item = ContentItem(
+                    content_type="table",
+                    path=csv_path,
+                    content=preview,
+                    image_data=None,
+                    metadata=metadata
+                )
+                items.append(item)
+
+                # Also add a text-summary item for the sheet (if needed for QA)
+                text_summary = f"Sheet: {sheet_name}\nColumns: {', '.join(map(str, df.columns.tolist()))}\nRowCount: {df.shape[0]}"
+                text_item_path = os.path.join(self.base_dir, "text", f"{base_name}__{safe_sheet_name}_summary.txt")
+                with open(text_item_path, "w", encoding="utf-8") as f:
+                    f.write(text_summary)
+
+                items.append(ContentItem(
+                    content_type="text",
+                    path=text_item_path,
+                    content=text_summary,
+                    metadata={"sheet": sheet_name}
+                ))
+        except Exception as e:
+            logger.error(f"Error processing excel {excel_path}: {e}")
+        return items
+
+
+    def process_docx_file(self, docx_path: str) -> List[ContentItem]:
+        """Process Word (.docx) files. Extract paragraphs and tables as separate items."""
+        items = []
+        if docx is None:
+            logger.error("python-docx not installed.")
+            return items
+
+        try:
+            document = docx.Document(docx_path)
+            base_name = os.path.splitext(os.path.basename(docx_path))[0]
+
+            # Extract paragraphs (join into reasonable sized chunks)
+            all_paras = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+            joined = "\n\n".join(all_paras)
+            if joined:
+                # Optionally chunk using your RecursiveCharacterTextSplitter (already used for text files)
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200, length_function=len)
+                chunks = text_splitter.split_text(joined)
+                for i, chunk in enumerate(chunks):
+                    text_file_name = os.path.join(self.base_dir, "text", f"{base_name}_para_chunk_{i}.txt")
+                    with open(text_file_name, "w", encoding="utf-8") as f:
+                        f.write(chunk)
+                    items.append(ContentItem(
+                        content_type="text",
+                        path=text_file_name,
+                        content=chunk,
+                        metadata={"chunk": i}
+                    ))
+
+            # Extract tables
+            for t_index, table in enumerate(document.tables):
+                rows = []
+                for r in table.rows:
+                    rows.append([c.text.replace("\n", " ").strip() for c in r.cells])
+
+                # Convert to CSV string and save
+                csv_path = os.path.join(self.base_dir, "tables", f"{base_name}_table_{t_index}.csv")
+                os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                with open(csv_path, "w", encoding="utf-8", newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    for row in rows:
+                        writer.writerow(row)
+
+                # Build preview
+                preview_rows = rows[:50]
+                preview_csv = "\n".join([",".join([cell.replace(",", " ") for cell in r]) for r in preview_rows])
+                items.append(ContentItem(
+                    content_type="table",
+                    path=csv_path,
+                    content=preview_csv,
+                    metadata={"file": docx_path, "table_index": t_index, "rows": len(rows)}
+                ))
+
+        except Exception as e:
+            logger.error(f"Error processing docx {docx_path}: {e}")
+
+        return items
     
-    def query_content(self, query: str, max_items: int = 10, metrics: List[str] = None) -> str:
+    def query_content(self, query: str, max_items: int = 26, metrics: List[str] = None) -> str:
         """Query the identified content items with improved image context handling"""
         if not self.items:
             return "No content has been processed yet. Please provide a file, URL, or directory to analyze."
@@ -634,7 +760,7 @@ class AIAgent:
         
         # Keywords to help with content selection
         if any(keyword in query.lower() for keyword in ["image", "picture", "photo", "show", "explain", "describe"]):
-            selected_items.extend(image_items[:11])
+            selected_items.extend(image_items[:26])
         
         if any(keyword in query.lower() for keyword in ["text", "say", "write", "content"]):
             if text_items:
@@ -646,14 +772,14 @@ class AIAgent:
                         pages_covered.add(page_num)
         
         if any(keyword in query.lower() for keyword in ["table", "data", "column", "row"]):
-            selected_items.extend(table_items[:11])
+            selected_items.extend(table_items[:26])
         
         if any(keyword in query.lower() for keyword in ["graph", "plot", "trend", "bar graph", "bar chart", "histogram","box plot","heat map","pie chart"]):
-            selected_items.extend(visualization_items[:11])
+            selected_items.extend(visualization_items[:26])
         
         if any(keyword in query.lower() for keyword in ["page", "whole", "entire", "complete", "all"]):
             if page_items:
-                selected_items.extend(page_items[:11])
+                selected_items.extend(page_items[:26])
         
         # If no specific content type was identified, use a balanced approach
         if not selected_items:
@@ -666,13 +792,13 @@ class AIAgent:
                         pages_covered.add(page_num)
             
             if table_items:
-                selected_items.extend(table_items[:11])
+                selected_items.extend(table_items[:26])
             
             if image_items:
-                selected_items.extend(image_items[:11])
+                selected_items.extend(image_items[:26])
             
             if not selected_items and page_items:
-                selected_items.extend(page_items[:11])
+                selected_items.extend(page_items[:26])
         
         # Limit to max_items
         selected_items = selected_items[:max_items]
@@ -905,15 +1031,7 @@ class AIAgent:
                     print(response)
 
 
-class ContentIdentifier:
-    """Identifies content types in images"""
-    
-    def __init__(self, model: AIModel):
-        self.model = model
-    
-    def identify_image_content(self, encoded_image: str) -> List[str]:
-        """Identify the type of content in an image"""
-        return self.model.identify_image_content(encoded_image)
+
 
 
 def main():
