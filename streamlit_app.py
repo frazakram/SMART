@@ -1,4 +1,4 @@
-# SMART - System for Multimodal Analysis & Response Technology
+#KenshoAI - AI Product fot  Multimodal Analysis & Response
 # Enhanced Streamlit Interface for Advanced Document Understanding
 import os
 import base64
@@ -12,11 +12,16 @@ import streamlit as st
 from PIL import Image
 import pandas as pd
 from project2 import AIAgent, ModelFactory
+from db import Database
+
+# Initialize database
+if "db" not in st.session_state:
+    st.session_state.db = Database("KenshoAI_database.db")
 
 # Page configuration
 st.set_page_config(
-    page_title="🧠 SMART - AI Document Intelligence",
-    page_icon="🧠",
+    page_title="🔎 KenshoAI - AI Document Intelligence",
+    page_icon="🔎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -95,10 +100,38 @@ if "processing_stats" not in st.session_state:
 if "agent_initialized" not in st.session_state:
     st.session_state.agent_initialized = False
 
+# Load chat history from database on startup
+if not st.session_state.chat_history:
+    db_messages = st.session_state.db.get_messages()
+    for msg in reversed(db_messages):  # Reverse to maintain chronological order
+        metrics = json.loads(msg['metrics']) if msg['metrics'] else None
+        st.session_state.chat_history.append({
+            "role": msg['role'],
+            "content": msg['content'],
+            "metrics": metrics
+        })
+
+# Load processed items from database on startup
+if not st.session_state.processed_items and "agent" in st.session_state and st.session_state.agent:
+    db_items = st.session_state.db.get_processed_items()
+    for item_dict in db_items:
+        # Convert database items to ContentItem objects
+        from project2 import ContentItem
+        item = ContentItem(
+            content_type=item_dict['type'],
+            path=item_dict['path'],
+            content=item_dict['content'],
+            image_data=item_dict['image_base64'],
+            metadata=item_dict.get('metadata', {})
+        )
+        st.session_state.processed_items.append(item)
+        if st.session_state.agent:
+            st.session_state.agent.items.append(item)
+
 # Header
-st.markdown('<h1 class="main-header">🧠 SMART</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">System for Multimodal Analysis & Response Technology</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Upload documents, analyze content, and ask intelligent questions</p>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🔎 KenshoAI</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">AI Tool for  Multimodal Analysis & Response</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Upload documents, analyze content, and ask questions</p>', unsafe_allow_html=True)
 
 # Sidebar for model configuration
 st.sidebar.header("Model Configuration")
@@ -155,6 +188,18 @@ if use_separate_verification:
         "api_key": verification_api_key,
         "model_name": verification_model_name
     }
+
+# Database configuration sidebar section
+st.sidebar.header("Database Configuration")
+db_path = st.sidebar.text_input(
+    "Database Path",
+    value="KenshoAI_database.db",
+    help="Path where the SQLite database will be stored"
+)
+
+# Update database if path changes
+if db_path != "KenshoAI_database.db" and "db" in st.session_state:
+    st.session_state.db = Database(db_path)
 
 # Agent Status Display
 if st.session_state.agent_initialized:
@@ -255,7 +300,7 @@ with tab1:
     if input_method == "Upload Files":
         uploaded_files = st.file_uploader(
             "Upload documents or images",
-            type=["pdf", "jpg", "jpeg", "png", "txt"],
+            type=["pdf", "jpg", "jpeg", "png", "txt", "xlsx", "xls", "docx", "doc", "csv"],
             accept_multiple_files=True
         )
         
@@ -269,31 +314,17 @@ with tab1:
                     
                     # Process the file
                     new_items = st.session_state.agent.process_file(temp_path)
-                    # In the streamlit_app.py file, update these sections:
-
-# For the "Upload Files" section (around line 94):
+                    
                     if new_items:
                         st.session_state.processed_items.extend(new_items)
                         st.session_state.agent.items.extend(new_items) 
                         st.session_state.processing_stats['last_processed'] = datetime.now()
- # Add items to agent
+                        
+                        # Save processed items to database
+                        for item in new_items:
+                            st.session_state.db.save_processed_item(item.to_dict())
+                            
                         st.success(f"Successfully processed {uploaded_file.name}")
-
-                    # For the "Enter URL" section (around line 108):
-                    if new_items:
-                        st.session_state.processed_items.extend(new_items)
-                        st.session_state.agent.items.extend(new_items)
-                        st.session_state.processing_stats['last_processed'] = datetime.now()
-  # Add items to agent
-                        st.success(f"Processed URL: Found {len(new_items)} content items")
-
-                    # For the "Enter Local Path" section (around line 119):
-                    if new_items:
-                        st.session_state.processed_items.extend(new_items)
-                        st.session_state.agent.items.extend(new_items)
-                        st.session_state.processing_stats['last_processed'] = datetime.now()
-  # Add items to agent
-                        st.success(f"Processed path: Found {len(new_items)} content items")
                     else:
                         st.error(f"Failed to process {uploaded_file.name}")
                     
@@ -312,6 +343,11 @@ with tab1:
                         st.session_state.processed_items.extend(new_items)
                         st.session_state.agent.items.extend(new_items)  # Add items to agent
                         st.session_state.processing_stats['last_processed'] = datetime.now()
+                        
+                        # Save processed items to database
+                        for item in new_items:
+                            st.session_state.db.save_processed_item(item.to_dict())
+                            
                         st.success(f"Processed URL: Found {len(new_items)} content items")
                     else:
                         st.error("Failed to process URL")
@@ -328,6 +364,11 @@ with tab1:
                         st.session_state.processed_items.extend(new_items)
                         st.session_state.agent.items.extend(new_items)  # Add items to agent
                         st.session_state.processing_stats['last_processed'] = datetime.now()
+                        
+                        # Save processed items to database
+                        for item in new_items:
+                            st.session_state.db.save_processed_item(item.to_dict())
+                            
                         st.success(f"Processed path: Found {len(new_items)} content items")
                     else:
                         st.error("Failed to process path")
@@ -346,7 +387,10 @@ with tab1:
         for content_type, count in content_types.items():
             st.write(f"- {content_type}: {count} items")
         
+        # Special content identified in
+        
         # Special content identified in images
+                # Special content identified in images
         special_content = []
         for item in st.session_state.processed_items:
             if item.type == "image" and "identified_content" in item.metadata:
@@ -362,7 +406,7 @@ with tab1:
             # Display up to 5 items of each type
             displayed_items = 0
             for content_type in ["text", "table", "image", "page"]:
-                items = [item for item in st.session_state.processed_items if item.type == content_type][:11]
+                items = [item for item in st.session_state.processed_items if item.type == content_type][:26]
                 if items:
                     st.subheader(f"{content_type.capitalize()} Samples")
                     for item in items:
@@ -372,12 +416,11 @@ with tab1:
                             except:
                                 st.error(f"Could not display image: {item.path}")
                         else:
-                            # st.text_area(f"Content from {item.path}", item.content, height=150)
                             st.text_area(f"Content from {item.path}", item.content, height=150, key=f"item_{displayed_items}_{id(item)}")                            
                         displayed_items += 1
-                        if displayed_items >= 10:  # Limit total samples
+                        if displayed_items >= 26:  # Limit total samples
                             break
-                if displayed_items >= 10:
+                if displayed_items >= 26:
                     break
 
 # Tab 2: Chat with Documents
@@ -410,28 +453,7 @@ with tab2:
         
         st.divider()
         
-        # Chat input
-        user_query = st.text_input("Ask a question about your documents:")
-        
-        if user_query and st.button("Submit Question"):
-            with st.spinner("Generating response..."):
-                # Add user query to chat history
-                st.session_state.chat_history.append({"role": "user", "content": user_query})
-                
-                # Get AI response with selected metrics
-                response_data = st.session_state.agent.query_content(user_query, metrics=selected_metrics)
-                
-                # Add assistant response and metrics to chat history
-                st.session_state.chat_history.append({
-                    "role": "assistant", 
-                    "content": response_data.get("response", ""),
-                    "metrics": response_data.get("metrics", {})
-                })
-                
-                # Rerun to display the new message
-                st.rerun()
-        
-        # Display chat history
+        # Display chat history first
         st.subheader("Conversation")
         for message in st.session_state.chat_history:
             role = message["role"]
@@ -451,6 +473,44 @@ with tab2:
                             st.markdown(f"<div class='metric-card'><h4>{metric.capitalize()}</h4><h3>{data.get('score', 'N/A')}/10</h3></div>", unsafe_allow_html=True)
                             with st.expander("Justification"):
                                 st.write(data.get('justification', 'No justification provided.'))
+        
+        # Chat input moved to bottom after displaying conversation
+        st.divider()
+        user_query = st.text_input("Ask a question about your documents:", key="query_input")
+        
+        if user_query and st.button("Submit Question", key="submit_button"):
+            with st.spinner("Generating response..."):
+                # Add user query to chat history
+                user_message = {"role": "user", "content": user_query}
+                st.session_state.chat_history.append(user_message)
+                
+                # Save user message to database
+                st.session_state.db.save_message(
+                    role="user",
+                    content=user_query,
+                    metrics=None
+                )
+                
+                # Get AI response with selected metrics
+                response_data = st.session_state.agent.query_content(user_query, metrics=selected_metrics)
+                
+                # Add assistant response and metrics to chat history
+                assistant_message = {
+                    "role": "assistant", 
+                    "content": response_data.get("response", ""),
+                    "metrics": response_data.get("metrics", {})
+                }
+                st.session_state.chat_history.append(assistant_message)
+                
+                # Save assistant message to database
+                st.session_state.db.save_message(
+                    role="assistant",
+                    content=response_data.get("response", ""),
+                    metrics=response_data.get("metrics", {})
+                )
+                
+                # Rerun to display the new message
+                st.rerun()
 
 # Tab 3: Analytics Dashboard
 with tab3:
@@ -497,6 +557,38 @@ with tab3:
             df_chat['Value'] = df_chat['Value'].astype(str)
             st.dataframe(df_chat, use_container_width=True)
 
+        # Add database statistics
+        st.subheader("📂 Database Statistics")
+        try:
+            db_messages = st.session_state.db.get_messages()
+            db_items = st.session_state.db.get_processed_items()
+            
+            db_stats = {
+                "Metric": ["Stored Messages", "Stored Content Items", "Database Path"],
+                "Value": [
+                    str(len(db_messages)),
+                    str(len(db_items)),
+                    db_path
+                ]
+            }
+            
+            df_db = pd.DataFrame(db_stats)
+            df_db['Value'] = df_db['Value'].astype(str)
+            st.dataframe(df_db, use_container_width=True)
+            
+            # Show database messages in expandable section
+            with st.expander("View Database Messages"):
+                if db_messages:
+                    message_df = pd.DataFrame([
+                        {"ID": msg["id"], "Role": msg["role"], "Content": msg["content"][:100]+"..." if len(msg["content"]) > 100 else msg["content"], "Timestamp": msg["timestamp"]}
+                        for msg in db_messages[:50]  # Limit to recent 50
+                    ])
+                    st.dataframe(message_df, use_container_width=True)
+                else:
+                    st.info("No messages stored in database yet.")
+        except Exception as e:
+            st.error(f"Error retrieving database statistics: {str(e)}")
+
 # Tab 4: Settings
 with tab4:
     st.header("⚙️ Settings & Data Management")
@@ -527,10 +619,31 @@ with tab4:
                 )
             except Exception as e:
                 st.error(f"Export failed: {str(e)}")
+                
+        # Add database export option
+        if st.button("📤 Export Chat History from Database"):
+            try:
+                db_messages = st.session_state.db.get_messages()
+                if db_messages:
+                    export_data = {
+                        "messages": db_messages,
+                        "export_time": datetime.now().isoformat()
+                    }
+                    
+                    st.download_button(
+                        label="💾 Download Chat History",
+                        data=json.dumps(export_data, indent=2, default=str),
+                        file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                        mime="application/json"
+                    )
+                else:
+                    st.info("No messages to export from database.")
+            except Exception as e:
+                st.error(f"Export failed: {str(e)}")
     
     with col2:
         st.subheader("🗑️ Clear Data")
-        if st.button("🗑️ Clear All Data", type="secondary"):
+        if st.button("🗑️ Clear All Session Data", type="secondary"):
             # Clear all session state data
             st.session_state.processed_items = []
             st.session_state.chat_history = []
@@ -544,8 +657,16 @@ with tab4:
             if st.session_state.agent:
                 st.session_state.agent.items = []
             
-            st.success("✅ All data cleared successfully!")
+            st.success("✅ All session data cleared successfully!")
             st.rerun()
+            
+        # Add clear database option
+        if st.button("🗑️ Clear Database", type="secondary"):
+            try:
+                st.session_state.db.clear()
+                st.success("✅ Database cleared successfully!")
+            except Exception as e:
+                st.error(f"Error clearing database: {str(e)}")
 
 # Enhanced Footer
 st.sidebar.markdown("---")
@@ -556,8 +677,9 @@ st.sidebar.info(
     "• Advanced content analysis\n"
     "• Interactive chat interface\n"
     "• Real-time analytics\n"
+    "• Database persistence\n"
     "• Export capabilities"
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Built with Streamlit & AI 🎯")
+st.sidebar.caption("Built by Fraz ©️ 2025")
